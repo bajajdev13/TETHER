@@ -104,6 +104,15 @@ def lab(N=50,CLEAN=300,seed=7):
 def statistics_median(x): return statistics_median_(x) if x else None
 def statistics_median_(x): return st.median(x)
 if __name__=='__main__':
-    o,g,ex=lab();print(json.dumps(o,indent=1));print(g);res,gu,n=ex
-    for l in res['log']:print(l)
-    print('guilty',gu,'replays',n)
+    o,g,ex=lab(); res,guilty,n=ex
+    print('TETHER prototype: Attack Lab (scripted agent, seed 7)\n')
+    print(f"{'attack':56}{'blocked':>9}{'restricted':>12}{'span named':>12}{'replays':>9}")
+    for k,v in o.items():
+        sp=f"{v['exact']}/{v['abl']}" if v['abl'] else '-'
+        print(f"{k:56}{str(v['det'])+'/'+str(v['N']):>9}{v['restr']:>12}{sp:>12}{str(v['replays'] or '-'):>9}")
+    print(f"\nclean sessions: {g['false_alarms']}/{g['clean']} false alarms, {g['clean_done']}/{g['clean']} tasks completed")
+    print(f"new agent, no history: {g['newagent']}/50 blocked | chain over-reach: {g['chain']}/50 denied")
+    print(f"contract+origin check: {g['latency_us']:.2f} us/call (Python, excludes network)\n")
+    print('Example hijacked run (A1):')
+    for t,v,why,r in res['log']: print(f'  {v.upper():6}{t:26}{why:12}risk {r} dB')
+    print(f'  cause: span {guilty[0]} named in {n} replays (naive: 40)')
