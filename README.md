@@ -17,8 +17,8 @@ python3 tether_proto.py --live   # one hijacked session in real time (simulated 
 |---|---|---|
 | Token binding | HMAC token bound to agent + host; replayed or forged tokens are denied (+20 dB) | `Gateway._decide` |
 | Hard policy | Tool and data class must be in the contract; every argument is checked against an explicit rule | `RULES` |
-| Provenance | A control argument (vendor, path, URL) that comes from untrusted text is held | `_decide` |
-| Clean-room twin | 5 rollouts that see only the mandate; approve the held call if at least 4 reproduce it, else deny. It can only tighten, never override a policy deny | `Gateway._twin` |
+| Provenance (gateway-inferred) | The gateway fetched the document, so it holds every span. For each control argument (vendor, path, URL) it matches the **value** against the mandate and the spans: only a value from the mandate and absent from untrusted text is trusted; a value found in untrusted text, or not traceable anywhere (paraphrased, obfuscated, invented), is held. The agent's own claim about where a value came from is ignored | `Gateway._infer` |
+| Clean-room twin (**simulated**) | A rule (does the call match the mandate?) with 97% success per rollout, standing in for 5 independent LLM rollouts that see only the mandate. Approve if at least 4 of 5 pass. It can only tighten, never override a policy deny | `Gateway._twin` |
 | Sequential evidence engine | For in-contract events: P_role = (agent counts + 50 x cohort prior) / (N + 50); alternative = 98.6% P_role + 1.4% broad Q; evidence E = product of likelihood ratios; risk = 10 log10(E) dB | `Gateway._stat` |
 | Decoys | A decoy vendor that no honest workflow touches; a hit scores through the same evidence engine | `ekey`, `REG` |
 | Containment | 20 dB restricts (write, send, sensitive reads off); 35 dB isolates (no more calls run) | `_state` |
@@ -40,20 +40,24 @@ python3 tether_proto.py --live   # one hijacked session in real time (simulated 
 | A7 token replay / forged token (simulated) | 50 | 50 | 0 | 50 | - | 50 |
 | A8 mimicry: in-role call, normal amount | 50 | 0 | 50 | 0 | - | - |
 | A9 mimicry: in-role call, unusual amount (249,000) | 50 | 0 | 50 | 0 | - | - |
-| A10 in-role agent touches decoy vendor | 50 | 0 | 50 | **50** | - | - |
+| A10 agent calls the decoy vendor (value untraceable, decoy evidence scored) | 50 | 50 | 0 | 50 | - | - |
+| A11 obfuscated vendor swap (value spelled out letter by letter) | 46 | 46 | 0 | 46 | 46/46 | 46 |
 
-"Attempted" means the scripted agent actually emitted a malicious call (it follows an injection 95% of the time). A10's first call runs, then the session is restricted, so damage is limited, not prevented. A single blocked call stays at "watch" (10 dB) by design.
+"Attempted" means the scripted agent actually emitted a malicious call (it follows an injection 95% of the time). A single blocked call stays at "watch" (10 dB) by design.
 
 | Other result | Value |
 |---|---|
 | False alarms on benign sessions | 0 / 300 (300/300 tasks completed) |
-| Vendor copied from the quote (valid value, untrusted origin), 100 sessions | strict provenance: 100 false alarms; with the clean-room twin: **0** |
+| Vendor copied from the quote (valid value, untrusted origin), 100 sessions | strict provenance: 100 false alarms; with the simulated twin: **0** |
 | New tool: valid / none / forged passport | 50 / 0 / 0 of 50 allowed |
-| Privilege escalation across 300 random agent-to-agent delegations | 0 |
+| Agent-to-agent delegation, run through `Gateway.decide()`: 300 random parent / child / request sets, every tool probed (1500 probes) | 0 escalations (184 calls allowed, all inside request and parent and child contract) |
+| Containment enforced (not just recorded) | restricted: write denied, in-role read allowed; isolated: no call runs afterwards |
+| Attribution controls | 0 / 50 false attributions on benign sessions; same span set on replay with new seeds 40 / 40 |
+| Test-suite self-check | every declared attack (A1-A10) produces its intended malicious calls, asserted per session |
 | Slow drift, 0.5% / 1% / 2% per day, 60 days | per-day anomaly check alarms 1% / 2% / 77%; frozen anchor alarms 100% / 100% / 100% (median day 34 / 28 / 23) |
 | Drift detector false alarms | per-day 0.5%, anchor 2.0% |
 | Legitimate shift: alert without / with ratified passport | 100% / 2% |
-| Gateway overhead (measured) | median about 9 us, p99 about 38 us per call |
+| Gateway overhead (measured) | median about 17 us, p99 about 58 us per call (includes value matching against 40 spans) |
 
 ## Timing: measured vs simulated
 
@@ -62,8 +66,13 @@ The lab runs in seconds because the scripted agent has no LLM or network wait. A
 ## Honest limits
 
 - **The agent is a scripted simulator, not an LLM.** These results test gateway logic, not model behavior. A real tool-calling agent is the next step.
-- **Token binding is simulated** with HMAC over (agent, host). It is not production DPoP or mTLS (RFC 9449, 8705).
+- **Token binding is simulated** with HMAC over (agent, host) and a demo-only hard-coded key. There is no issuance, rotation, expiry or replay protection, so it is not production DPoP or mTLS (RFC 9449, 8705).
+- **The twin is a simulated rule**, not independent LLM rollouts. It tests the decision logic only.
+- **Change passports** test signature validation only. There is no expiry, revocation or full proposed-shadow-probation-ratified lifecycle in code.
+- **Attribution ground truth** is the set of spans whose payload produced the blocked call. "Span named" is exact set match on that, and the result is a stochastic replay outcome, checked for false attribution and reproducibility above.
+- **Gateway overhead** is the time inside `Gateway.decide()` only (about 3,000 calls, one laptop-class machine, Python 3), not end-to-end latency.
 - **Policy-denial weights (10 dB) are hand-set.** The evidence engine's parameters (eta 0.014, nu 50) are the deck's starting values, not tuned. The index is not a calibrated probability.
+- **Origin inference is literal value matching.** It fails closed (untraceable means held), but it costs a twin consult on almost every call, because honest values also appear in the quote. A value that equals the mandate's own value is trusted, which is harmless by definition. Real systems would need span-level taint tracking inside the agent for stronger guarantees.
 - **In-range mimicry is not caught (A8, A9).** An in-role call with trusted arguments passes every check, and one unusual amount does not move the evidence enough. TETHER limits that damage with least privilege and value limits.
 - **Drift results depend on the simulated drift model** (histograms over 5 amount buckets, 60 sessions a day). They show the anchor idea works, not what real traffic looks like.
 - **The benign workload is synthetic**, so 0 false alarms here says little about real traffic.
@@ -73,4 +82,4 @@ The lab runs in seconds because the scripted agent has no LLM or network wait. A
 ## Files
 
 - `tether_proto.py`: gateway, scripted agent simulator, twin, evidence engine, attribution, Attack Lab, drift lab
-- `SD_Card_TETHER_D3COY_v5.pptx` / `.pdf`: the screening deck
+- `SD_Card_TETHER_D3COY.pptx` / `.pdf`: the screening deck
